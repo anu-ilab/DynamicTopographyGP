@@ -25,6 +25,7 @@ color_spot_ship_2 ='lightblue'
 # Settings overriden from userSettings.py if run as script
 SHOWFIGS=True
 SHOWTABLES=True
+CONTINUOUS_COLOURSCALES=True
 
 def toggleFigure(n):
     try:
@@ -139,7 +140,10 @@ def plotMap(mapdatafile,outfile):
     nlats = lats.shape[0]
     nlons = lons.shape[0]
 
-    nlevels=100
+    if CONTINUOUS_COLOURSCALES:
+        nlevels=100
+    else:
+        nlevels=14
     max_mean = 2.3 #2.1
     mean_levels = np.linspace(-max_mean,max_mean,nlevels)
 
@@ -178,6 +182,7 @@ def plotMap(mapdatafile,outfile):
     sc_mean = ax_mean.contourf(lons,lats,mean,levels=mean_levels,cmap=plt.cm.coolwarm,transform=ccrs.PlateCarree())
     for c in sc_mean.collections:
         c.set_edgecolor('face')
+    #ax_mean.contour(lons,lats,mean,levels=[-2.,-1.5,-1,-.5,0,.5,1,1.5,2],colors='k',transform=ccrs.PlateCarree())
     sc_std = ax_std.contourf(lons,lats,variance**0.5,levels=std_levels,cmap=plt.cm.cubehelix_r,transform=ccrs.PlateCarree())
     for c in sc_std.collections:
         c.set_edgecolor('face')
@@ -451,6 +456,10 @@ def plotWhereToSample(mapdatafile,samplemask,outfile,llist=[2,5,10,15,20,30]):
     r1 = 0.16
     rowshift = 0.28
     height=0.25
+    if CONTINUOUS_COLOURSCALES:
+        levels = np.linspace(0,1,100)
+    else:
+        levels = np.linspace(0,1,14)
     for i,l in enumerate(llist):
         #ax = fig_dkl.add_subplot(3,2,i+1,projection=ccrs.Robinson())
         ax = fig_dkl.add_axes((c1 +(i%2)*cshift,r1+(2-int(i/2))*rowshift,width,height),projection=ccrs.Robinson())
@@ -459,7 +468,7 @@ def plotWhereToSample(mapdatafile,samplemask,outfile,llist=[2,5,10,15,20,30]):
         with open(samplemask%l,'rb') as fp:
             dkl_min = pickle.load(fp)
             dkl = pickle.load(fp)
-        sc = ax.contourf(lons,lats,dkl/dkl.max(),levels=np.linspace(0,1,100),cmap=plt.cm.cubehelix,transform=ccrs.PlateCarree())
+        sc = ax.contourf(lons,lats,dkl/dkl.max(),levels=levels,cmap=plt.cm.cubehelix,transform=ccrs.PlateCarree())
         for c in sc.collections:
             c.set_edgecolor('face')
         ax.text(0,0.95,"l = %i"%l,transform=ax.transAxes)
@@ -532,6 +541,91 @@ def calculateModelRange(datafile,dataset_type,paramfile,inversefile,nlats = 45,n
     srt = np.argsort(maxs)
     print('    Median: %.2f  99: %.2f--%.2f  50: %.2f--%.2f'%(maxs[srt[int(n_sample/2)]],maxs[srt[int(n_sample/200)]],maxs[srt[int(199*n_sample/200)]],maxs[srt[int(n_sample/4)]],maxs[srt[int(3*n_sample/4)]]))
 
+def write_sph_table(sphfile,outfile,dataset_name):
+    y, sig = loadSpectrum(sphfile)
+    with open(outfile, 'w') as fp:
+        l = 1
+        i = 0
+        fp.write("# Valentine & Davies -- Global models from sparse data: A robust estimate\n"
+                 "#                       of Earth's residual topography spectrum\n#\n"
+                 "# Spherical harmonic expansion coefficients for mean of posterior Gaussian\n"
+                 "# Process model derived from %s data.\n#\n"
+                 "# NB. This file contains only (the square root of) the diagonal elements of\n"
+                 "#     the posterior covariance matrix. The full posterior covariance matrix\n"
+                 "#     can be generated using the code accompaning this paper.\n#\n"
+                 "# l - spherical harmonic degree\n"
+                 "# m - spherical harmonic order\n"
+                 "# y - spherical harmonic expansion coefficient (y_i, eq. 12)\n"
+                 "# s - standard error on coefficient (sqrt(Sigma_{ii}), eq. 12)\n#\n"%dataset_name)
+        fp.write("# l      m         y            s\n")
+
+        while i<y.shape[0]:
+            for m in range(-l,l+1):
+                fp.write('%3i    %3i    %9.5f     %9.5f\n'%(l,m,y[i],sig[i,i]**0.5))
+                i+=1
+            l+=1
+def plotPerformance(perffile,outfile):
+    plt.rcParams['font.size']=12
+    with open(perffile,'rb') as fp:
+        perf = pickle.load(fp)
+    fig = plt.figure(figsize = (8,4))
+    ax = fig.add_subplot(111)
+    xmin = -6
+    xmax = 6
+    xx = np.linspace(xmin,xmax,5000)
+    ax.hist(perf[:,5],1000,density=True,color='darkgrey')
+    plt.plot(xx,np.exp(-0.5*xx**2)/np.sqrt(2*np.pi),color='firebrick')
+    ax.set_xlim(xmin,xmax)
+    ax.set_xticks([-6,-3,0,3,6])
+    ax.set_yticks([])
+    ax.set_xlabel("Standard deviations from the mean")
+    plt.tight_layout()
+    plt.savefig(outfile)
+    if SHOWFIGS:plt.show()
+def plotHyperparameterTradeoffs(dataset_type,likelihoodfile,outfile):
+    plt.rcParams['font.size']=12
+    labels = [r"$\sigma_1$",r"$\sigma_2$",r"$\nu$",r"$\mu_0$",r"$\Delta$"]
+    ticks = [[0.60,0.65],[0.2,0.25],[0.45,0.50],[-.2,0,.2],[0.02,0.08,0.14]]
+    if dataset_type == 'high_accuracy_spot':
+        npar = 4
+    elif dataset_type == 'all_spot':
+        npar = 5
+    else:
+        raise ValueError("Unrecognised dataset type")
+    with open(likelihoodfile,'rb') as fp:
+        fig = plt.figure(figsize=(8,8))
+        for i in range(npar-1):
+            for j in range(i+1,npar):
+                pp1 = pickle.load(fp)
+                pp2 = pickle.load(fp)
+                like = pickle.load(fp)
+                n = int((pp1.shape[0]-1)/2)
+                ax = fig.add_subplot(npar-1,npar-1,(i+1)+(npar-1)*(j-1))
+                sc = ax.contourf(pp1,pp2,np.exp(like - like[n,n]),100,cmap=plt.cm.cubehelix)
+                for c in sc.collections:
+                    c.set_edgecolor('face')
+                sc.set_clim(0,1)
+                ax.set_xticks(ticks[i])
+                ax.set_yticks(ticks[j])
+                if j==npar-1:
+                    ax.set_xlabel(labels[i])
+                else:
+                    ax.set_xticklabels([])
+                if i==0:
+                    ax.set_ylabel(labels[j])
+                else:
+                    ax.set_yticklabels([])
+    ax = fig.add_subplot(npar-1,npar-1,npar-1)
+    ax.axis('off')
+    cb = plt.colorbar(sc,ax=ax,fraction=0.5,aspect=10,label=r"$\propto \mathbb{P}(\sigma\,|\,\hat{d})$",ticks=[0,0.5,1.0])
+    cb.ax.yaxis.set_label_position('left')
+    cb.ax.set_ylim(0,1)
+    plt.tight_layout()
+    plt.savefig(outfile)
+    if SHOWFIGS: plt.show()
+
+
+
 if __name__ == '__main__':
     outputdir = os.path.abspath(userSettings.outputdir)
     if not os.path.exists(outputdir):
@@ -547,6 +641,7 @@ if __name__ == '__main__':
         sys.exit(1)
     SHOWFIGS = userSettings.PLT_SHOW
     SHOWTABLES = userSettings.TABLE_DATA
+    CONTINUOUS_COLOURSCALES = userSettings.CONTINUOUS_COLOURSCALES
     figdir=os.path.join(outputdir,'figures')
     if not os.path.exists(figdir): os.mkdir(figdir)
     # Create some functions to handle paths neatly
@@ -554,7 +649,11 @@ if __name__ == '__main__':
     ha_spot = lambda f: os.path.join(outputdir,'high_accuracy_spot',f)
     all_spot = lambda f: os.path.join(outputdir,'all_spot',f)
     spot_ship = lambda f: os.path.join(outputdir,'spot_shiptrack',f)
-
+    synth = lambda f: os.path.join(outputdir,'synthetic',f)
+    if userSettings.SUPPLEMENTARY_DATA:
+        suppdir = os.path.join(outputdir,'supplementary_data')
+        if not os.path.exists(suppdir): os.mkdir(suppdir)
+        supppath = lambda f: os.path.join(suppdir,f)
 
     # Map of raw data -- Fig. 1
     if toggleFigure(1):
@@ -614,14 +713,45 @@ if __name__ == '__main__':
         print("Figure 7 complete; file saved at %s\n"%figpath('histograms.pdf'))
     if toggleFigure(8):
         try:
-            # Map of where to sample -- Fig. 8
-            print("Making figure 8: Map of value of one additional sample")
-            plotWhereToSample(ha_spot('mapdata.pickle'),ha_spot('sampling_%i.pickle'),figpath('wheretosample.pdf'))
-            print("Figure 8 complete; file saved at %s\n"%figpath('wheretosample.pdf'))
+            # Histogram of synthetic performance
+            print("Making figure 8: Synthetic performance")
+            plotPerformance(synth('performance.pickle'),figpath('performance.pdf'))
+            print("Figure 8 complete; file saved at %s\n"%figpath('performance.pdf'))
         except FileNotFoundError:
-            print("Unable to find necessary data files. Skipping...")
+            print("Unable to find necessary data files. Skipping...\n")
     if toggleFigure(9):
-        print("Making figure 9: Map of low-degree residual topography")
+        try:
+            # Tradeoff plots
+            print("Making figure 9: Hyperparameter tradeoffs")
+            plotHyperparameterTradeoffs('all_spot',all_spot('likelihood.pickle'),figpath('hyper_tradeoff.pdf'))
+            print("Figure 9 complete; file saved at %s\n"%figpath('hyper_tradeoff.pdf'))
+        except FileNotFoundError:
+            print("Unable to find necessary data file. Skipping...\n")
+    if toggleFigure(10):
+        try:
+            # Map of where to sample -- Fig. 10
+            print("Making figure 10: Map of value of one additional sample")
+            plotWhereToSample(ha_spot('mapdata.pickle'),ha_spot('sampling_%i.pickle'),figpath('wheretosample.pdf'))
+            print("Figure 10 complete; file saved at %s\n"%figpath('wheretosample.pdf'))
+        except FileNotFoundError:
+            print("Unable to find necessary data files. Skipping...\n")
+    if toggleFigure(11):
+        print("Making figure 11: Map of low-degree residual topography")
         plotLowDegrees(ha_spot('sphcoeff.pickle'),all_spot('sphcoeff.pickle'),spot_ship('sphcoeff.pickle'),figpath('1to3.pdf'))
-        print("Figure 9 complete; file saved at %s\n"%figpath('1to3.pdf'))
+        print("Figure 11 complete; file saved at %s\n"%figpath('1to3.pdf'))
     print("All figures generated.")
+    if userSettings.SUPPLEMENTARY_DATA:
+        print("Generating supplementary data files ")
+        try:
+            write_sph_table(ha_spot('sphcoeff.pickle'),supppath('sph_coeff_high_accuracy_spot.dat'),'high accuracy spot')
+        except FileNotFoundError:
+            print("  Unable to load spherical harmonic coefficients for high accuracy spot data; continuing...")
+        try:
+            write_sph_table(all_spot('sphcoeff.pickle'),supppath('sph_coeff_all_spot.dat'),'all spot')
+        except FileNotFoundError:
+            print("  Unable to load spherical harmonic coefficients for all spot data; continuing...")
+        try:
+            write_sph_table(spot_ship('sphcoeff.pickle'),supppath('sph_coeff_spot_ship.dat'),'all spot and shiptrack')
+        except FileNotFoundError:
+            print("  Unable to load spherical harmonic coefficients for shiptrack data; continuing...")
+        print("All supplementary files generated.")
